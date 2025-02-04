@@ -464,7 +464,7 @@ class GUI:
         self.mode = "rgb"
         self.buffer_image = np.ones((self.W, self.H, 3), dtype=np.float32)
         self.time = 0.
-        self.show_radius = 2.
+        self.show_radius = 30.
         self.show_scene = True
         self.show_depth = False
         self.show_cameras = True
@@ -726,7 +726,6 @@ class GUI:
     def render(self):
 
         if self.gui:
-            print('Here')
             while dpg.is_dearpygui_running():
                 if self.iteration > self.final_iter and self.stage == 'coarse':
                     self.stage = 'fine'

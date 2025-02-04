@@ -71,8 +71,6 @@ class Scene:
         self.dataset_type = dataset_type
         self.cameras_extent = scene_info.nerf_normalization["radius"]
 
-        print(len(scene_info.train_cameras), len(scene_info.test_cameras))
-        exit()
 
         self.train_camera = FourDGSdataset(scene_info.train_cameras, args, dataset_type)
         self.test_camera = FourDGSdataset(scene_info.test_cameras, args, dataset_type)

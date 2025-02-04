@@ -16,14 +16,18 @@ ModelHiddenParams = dict(
     no_ds=False,
     empty_voxel=False,
     render_process=False,
-    static_mlp=False
+    static_mlp=False,
 
+    # Use Waveplanes instead of Hexplanes
+    use_waveplanes=True,
+    # Learn optimal plane rotation
+    plane_rotation_correction=True
 )
 OptimizationParams = dict(
     dataloader=True,
     iterations = 14000,
     batch_size=4, # Was 4
-    coarse_iterations = 10,
+    coarse_iterations = 20,
     densify_until_iter = 10_000,
     opacity_reset_interval = 60000,
     opacity_threshold_coarse = 0.005,

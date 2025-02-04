@@ -535,40 +535,39 @@ class GaussianModel:
                         print(name," :",weight.grad.mean(), weight.grad.min(), weight.grad.max())
         print("-"*50)
     def _plane_regulation(self):
-        multi_res_grids = self._deformation.deformation_net.grid.grids
+        if self._deformation.deformation_net.grid.is_waveplanes:
+            multi_res_grids = self._deformation.deformation_net.grid.grids_()
+        else:
+            multi_res_grids = self._deformation.deformation_net.grid.grids
         total = 0
         # model.grids is 6 x [1, rank * F_dim, reso, reso]
         for grids in multi_res_grids:
-            if len(grids) == 3:
-                time_grids = []
-            else:
-                time_grids =  [0,1,3]
+            time_grids =  [0,1,3]
             for grid_id in time_grids:
                 total += compute_plane_smoothness(grids[grid_id])
         return total
+
     def _time_regulation(self):
-        multi_res_grids = self._deformation.deformation_net.grid.grids
+        if self._deformation.deformation_net.grid.is_waveplanes:
+            multi_res_grids = self._deformation.deformation_net.grid.grids_()
+        else:
+            multi_res_grids = self._deformation.deformation_net.grid.grids
         total = 0
         # model.grids is 6 x [1, rank * F_dim, reso, reso]
         for grids in multi_res_grids:
-            if len(grids) == 3:
-                time_grids = []
-            else:
-                time_grids =[2, 4, 5]
+            time_grids =[2, 4, 5]
             for grid_id in time_grids:
                 total += compute_plane_smoothness(grids[grid_id])
         return total
     def _l1_regulation(self):
-                # model.grids is 6 x [1, rank * F_dim, reso, reso]
-        multi_res_grids = self._deformation.deformation_net.grid.grids
+        if self._deformation.deformation_net.grid.is_waveplanes:
+            multi_res_grids = self._deformation.deformation_net.grid.grids_()
+        else:
+            multi_res_grids = self._deformation.deformation_net.grid.grids
 
         total = 0.0
         for grids in multi_res_grids:
-            if len(grids) == 3:
-                continue
-            else:
-                # These are the spatiotemporal grids
-                spatiotemporal_grids = [2, 4, 5]
+            spatiotemporal_grids = [2, 4, 5]
             for grid_id in spatiotemporal_grids:
                 total += torch.abs(1 - grids[grid_id]).mean()
         return total

@@ -104,6 +104,10 @@ class ModelHiddenParams(ParamGroup):
         self.grid_pe=0 # useless, I was trying to add positional encoding to hexplane's features
         self.static_mlp=False # useless
         self.apply_rotation=False # useless
+
+
+        self.use_waveplanes=False # Use waveplanes instead of hexplanes
+        self.plane_rotation_correction=False # Use plane rotation correction.
         
         super().__init__(parser, "ModelHiddenParams")
         
