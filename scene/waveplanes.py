@@ -119,7 +119,7 @@ def interpolate_features_MUL(pts: torch.Tensor, kplanes, idwt, ro_grid, LR_flag)
         pts = torch.cat([rot_pts, pts[..., -1].unsqueeze(-1)], dim=-1) # keep time values
 
     # initialise the feature space
-    interp = []
+    interp = 1.
 
     # q,r are the coordinate combinations needed to retrieve pts
     q, r = 0, 1
@@ -128,25 +128,18 @@ def interpolate_features_MUL(pts: torch.Tensor, kplanes, idwt, ro_grid, LR_flag)
         coeff = kplanes[i]
 
         if LR_flag:
-            ms_features = coeff.LR(pts[..., (q, r)], idwt)
+            feature = coeff.LR(pts[..., (q, r)], idwt)
         else:
-            ms_features = coeff(pts[..., (q, r)], idwt)  # list returned in order of fine to coarse features
-        # Initialise interpolated space
-        if interp == []:
-            interp = [1. for j in range(len(ms_features))]
+            feature = coeff(pts[..., (q, r)], idwt)  # list returned in order of fine to coarse features
 
-        for j, feature in enumerate(ms_features):
-            interp[j] = interp[j] * feature
+        interp = interp * feature
 
         r += 1
         if r == 4:
             q += 1
             r = q + 1
 
-    # Concatenate ms_features
-    ms_interp = torch.cat(interp, dim=-1)
-
-    return ms_interp
+    return interp
 
 
 def interpolate_features_ZAM(pts: torch.Tensor, kplanes, idwt):
@@ -381,12 +374,10 @@ class GridSet(nn.Module):
                 yh.append(co)
 
         fine = idwt((yl, yh))
-        coarse = idwt((yl, yh[1:]))
 
         if self.what == 'spacetime':
-            # return [torch.ones_like(fine+1), torch.ones_like(coarse+1.)]
-            return [fine + 1., coarse + 1.]
-        return [fine, coarse]
+            return fine + 1.
+        return fine
 
     def LR(self, pts, idwt):
         yl = self.scaler[0] * self.grids[0]
@@ -408,31 +399,29 @@ class GridSet(nn.Module):
         """Given a set of points sample the dwt transformed Kplanes and return features
         """
         # List: coarse to fine with Feature size (1, N, H, W)
-        ms_plane = self.idwt_transform(idwt)
-        ms_features = []
+        plane = self.idwt_transform(idwt)
         signal = []
-        for plane in ms_plane:
-            if self.cachesig:
-                signal.append(plane.clone())
+        if self.cachesig:
+            signal.append(plane)
 
-            if self.what == 'spacetime':
-                # Sample features
-                feature = (
-                    grid_sample_wrapper(plane, pts, st=True)
-                    .view(-1, plane.shape[1])
-                )
-            else:
-                # Sample features
-                feature = (
-                    grid_sample_wrapper(plane, pts)
-                    .view(-1, plane.shape[1])
-                )
-            ms_features.append(feature)
+        if self.what == 'spacetime':
+            # Sample features
+            feature = (
+                grid_sample_wrapper(plane, pts, st=True)
+                .view(-1, plane.shape[1])
+            )
+        else:
+            # Sample features
+            feature = (
+                grid_sample_wrapper(plane, pts)
+                .view(-1, plane.shape[1])
+            )
 
         self.signal = signal
         self.step += 1
+        
         # Return multiscale features
-        return ms_features
+        return feature
 
 
 class HexPlaneField(nn.Module):
@@ -489,7 +478,7 @@ class HexPlaneField(nn.Module):
 
             self.grids.append(gridset)
 
-        self.feat_dim = self.grid_config[0]["output_coordinate_dim"] * 2
+        self.feat_dim = self.grid_config[0]["output_coordinate_dim"]
 
         init_plane = torch.empty([3, 3]).cuda()
         nn.init.uniform_(init_plane, a=-0.1, b=.1)

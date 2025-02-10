@@ -24,7 +24,6 @@ from utils.timer import Timer
 from utils.loader_utils import FineSampler, get_stamp_list
 
 from utils.image_utils import psnr
-from lpipsPyTorch import lpips
 from utils.loss_utils import l1_loss, ssim, l2_loss, lpips_loss
 from pytorch_msssim import ms_ssim
 import cv2

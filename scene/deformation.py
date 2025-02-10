@@ -55,17 +55,22 @@ class Deformation(nn.Module):
         mlp_out_dim = 0
         if self.grid_pe !=0:
             
-            grid_out_dim = self.grid.feat_dim+(self.grid.feat_dim)*2 
+            grid_out_dim = self.grid.feat_dim+(self.grid.feat_dim)*2
         else:
             grid_out_dim = self.grid.feat_dim
+            
+
         if self.no_grid:
             self.feature_out = [nn.Linear(4,self.W)]
+
         else:
             self.feature_out = [nn.Linear(mlp_out_dim + grid_out_dim ,self.W)]
+            
         
         for i in range(self.D-1):
             self.feature_out.append(nn.ReLU())
             self.feature_out.append(nn.Linear(self.W,self.W))
+            
         self.feature_out = nn.Sequential(*self.feature_out)
         self.pos_deform = nn.Sequential(nn.ReLU(),nn.Linear(self.W,self.W),nn.ReLU(),nn.Linear(self.W, 3))
         self.scales_deform = nn.Sequential(nn.ReLU(),nn.Linear(self.W,self.W),nn.ReLU(),nn.Linear(self.W, 3))
@@ -76,15 +81,14 @@ class Deformation(nn.Module):
     def query_time(self, rays_pts_emb, scales_emb, rotations_emb, time_feature, time_emb):
 
         if self.no_grid:
-            h = torch.cat([rays_pts_emb[:,:3],time_emb[:,:1]],-1)
+            hidden = torch.cat([rays_pts_emb[:,:3],time_emb[:,:1]],-1)
         else:
 
-            grid_feature = self.grid(rays_pts_emb[:,:3], time_emb[:,:1])
+            hidden = self.grid(rays_pts_emb[:,:3], time_emb[:,:1])
             # breakpoint()
             if self.grid_pe > 1:
-                grid_feature = poc_fre(grid_feature,self.grid_pe)
-            hidden = torch.cat([grid_feature],-1) 
-        
+                hidden = poc_fre(hidden,self.grid_pe)
+             
         
         hidden = self.feature_out(hidden)   
  

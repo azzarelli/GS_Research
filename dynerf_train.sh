@@ -45,7 +45,7 @@ else
 fi
 
 # 4 Training Cameras at extremities
-python gui.py -s /data/dynerf/$SAVEDIR/ --expname "dynerf/$SAVEDIR/$EXP_NAME" --configs arguments/dynerf/$ARGS --test_iterations 1000
+python gui.py -s /home/barry/data/dynerf/$SAVEDIR/ --expname "dynerf/$SAVEDIR/$EXP_NAME" --configs arguments/dynerf/$ARGS --test_iterations 1000
 
 # Metrics
 #python render.py --model_path "output/dynerf/$SAVEDIR/$EXP_NAME" --skip_train --configs arguments/dynerf/$ARGS
