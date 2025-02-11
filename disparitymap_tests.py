@@ -29,17 +29,6 @@ for y in range(h):
         if 0 <= x_new < w:
             estimated_right[y, x_new] = left_image[y, x]
 
-# Fill gaps using inpainting (optional)
-# mask = (estimated_right == 0).all(axis=2).astype(np.uint8) * 255
-# estimated_right = cv2.inpaint(estimated_right, mask, inpaintRadius=3, flags=cv2.INPAINT_TELEA)
-
-# Save or display the generated right image
-# cv2.imwrite("right_image.png", right_image)
-# ground_truth_right = cv2.cvtColor(ground_truth_right, cv2.COLOR_BGR2RGB)
-# estimated_right = cv2.cvtColor(right_image, cv2.COLOR_BGR2RGB)
-
-# ground_truth_right = cv2.cvtColor(ground_truth_right, cv2.COLOR_BGR2RGB)
-# estimated_right = cv2.cvtColor(right_image, cv2.COLOR_BGR2RGB)
 
 ground_truth_gray = cv2.cvtColor(ground_truth_right, cv2.COLOR_BGR2GRAY)
 estimated_gray = cv2.cvtColor(estimated_right, cv2.COLOR_BGR2GRAY)

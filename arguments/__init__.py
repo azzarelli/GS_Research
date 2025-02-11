@@ -152,8 +152,12 @@ class OptimizationParams(ParamGroup):
         self.opacity_threshold_fine_after = 0.005
         self.batch_size=1
 
-        self.pcd_thresh = 0.01 #
-        self.pcd_k = 4
+        self.lr_baseline=0.5
+        self.comprehensive_loss=False
+        self.LR_gt_loss=False
+        self.LR_RL_loss=False
+        self.LR_C_pred_loss=False
+        self.late_start=False
 
         self.add_point=False
         super().__init__(parser, "Optimization Parameters")

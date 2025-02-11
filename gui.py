@@ -410,7 +410,7 @@ class GUI:
                  debug_from,
                  expname
                  ):
-        self.gui = True
+        self.gui = False
 
         self.dataset = dataset
         self.hyperparams = hyperparams
@@ -441,10 +441,17 @@ class GUI:
         dataset.model_path = args.model_path
 
         self.timer = Timer()
-        self.scene = Scene(dataset, self.gaussians)
+        if ckpt_start is not None:
+            print(f"Starting from checkpoint {ckpt_start}")
+            self.scene = Scene(dataset, self.gaussians, load_iteration=int(ckpt_start))
+            self.stage = ' fine'
+            self.iteration = int(ckpt_start)
+        else:
+            self.stage = 'coarse'
+            self.scene = Scene(dataset, self.gaussians)
+
         self.timer.start()
 
-        self.stage = 'coarse'
 
         self.init_taining()
 
@@ -498,12 +505,15 @@ class GUI:
         self.gaussians.training_setup(self.opt)
         # Load from fine model if it exists
         if self.checkpoint:
-            if 'fine' in self.checkpoint:
-                (model_params, first_iter) = torch.load(self.checkpoint)
-                self.gaussians.restore(model_params, self.opt)
-
+            path_to_ckpt = self.scene.model_path + "/chkpnt" + f"_{self.stage}_" + str(self.checkpoint) + ".pth"
+            (model_params, first_iter) = torch.load(path_to_ckpt)
+            self.gaussians.restore(model_params, self.opt)
         # Set current iteration
-        self.iteration = first_iter
+        if self.checkpoint:
+            self.iteration = int(self.checkpoint)
+            self.final_iter = self.opt.iterations
+        else:
+            self.iteration = first_iter
 
         # Events for counting duration of step
         self.iter_start = torch.cuda.Event(enable_timing=True)
@@ -733,7 +743,6 @@ class GUI:
 
                 if self.iteration <= self.final_iter:
                     self.train_step()
-                    self.iteration += 1
 
 
                 if (self.iteration % self.args.test_iterations) == 0 or (self.iteration == 1 and self.stage == 'fine' and self.opt.coarse_iterations > 50):
@@ -742,6 +751,8 @@ class GUI:
                 if self.iteration > self.final_iter and self.stage == 'fine':
                     self.stage = 'done'
                     exit()
+
+                self.iteration += 1
 
                 with torch.no_grad():
                     self.viewer_step()
@@ -848,8 +859,8 @@ class GUI:
             with torch.no_grad():
                 # self.timer.pause()
                 if (self.iteration % 10) == 0 and self.gui:
-                    dpg.set_value("_log_depth", "Depth : {:>12.7f}".format(loss, ".5"))
-
+                    # dpg.set_value("_log_depth", "Concsitency Loss : {:>12.7f}".format(loss, ".5"))
+                    pass
             # Error if loss becomes nan
             if torch.isnan(loss).any():
                 print("loss is nan,end training, reexecv program now.")
@@ -858,6 +869,73 @@ class GUI:
             return loss
         else:
             return 0.
+
+    def LR_C_loss(self, camera, x_coords, y_coords, baseline, fx, W):
+        # Left or Right to center image gen and loss
+        # Translate the camera left/right (based on the sign of the baseline)
+        delta_T = np.zeros_like(camera.T)
+        delta_T[0] = baseline
+        camera.update_projections(delta_T)
+
+        leftimg = render(camera, self.gaussians, self.pipe, self.background, stage=self.stage,
+                         cam_type=self.scene.dataset_type)
+
+        disparity_left = ((baseline * fx) / leftimg['depth']).squeeze(0)
+        leftimg = leftimg['render']
+        x_disparity = (disparity_left / W) * 2  # Normalize to [-1, 1] range
+
+        # Shift x-coords left->center
+
+        x_lc = x_coords + x_disparity  # Shift pixels to the right
+        grid = torch.stack((x_lc, y_coords), dim=-1)
+
+        # Use grid_sample to warp the left image
+        LC_image = F.grid_sample(leftimg.unsqueeze(0), grid.unsqueeze(0), mode='bilinear', padding_mode='border',
+                                 align_corners=True).squeeze(0)
+
+        return LC_image
+
+
+    def consistency_loss(self, camera, center_img, baseline=0.5, gt_img=None):
+        """Implementing the L->C consistency loss
+
+        Basically reflecting this paper https://arxiv.org/pdf/2410.18822 (I haven't actually checked their implementation lol)
+        """
+        # Get the focal length from the camera parameters
+        fx = camera.image_width / (2. * np.tan(camera.FoVx / 2.))
+        C, H, W = center_img.shape  # Get image dimensions
+
+        # Generate the mesh grid for Img to Img translation along the baseline
+        y_coords, x_coords = torch.meshgrid(
+            torch.linspace(-1, 1, H, device=center_img.device),
+            torch.linspace(-1, 1, W, device=center_img.device),
+            indexing='ij'
+        )
+
+        if self.opt.comprehensive_loss:
+            left_im = self.LR_C_loss(camera, x_coords, y_coords, -self.opt.lr_baseline, fx, W)
+            right_im = self.LR_C_loss(camera, x_coords, y_coords, (2.*self.opt.lr_baseline), fx, W)
+            loss = 0.
+            if gt_img is not None and self.opt.LR_gt_loss:
+                # Loss w.r.t rendered image (maybe unecessary)
+                loss = 0.5 * (l1_loss(left_im, gt_img) + l1_loss(right_im, gt_img))
+            if self.opt.LR_RL_loss:
+                # Loss compared with each other
+                loss += 0.5 * (l1_loss(left_im, right_im) + l1_loss(right_im, left_im))
+
+            if self.opt.LR_C_pred_loss:
+                # Loss w.r.t gt image
+                loss = 0.5*(l1_loss(left_im, gt_img) + l1_loss(right_im, gt_img))
+
+            return loss
+
+        else:
+            # Left -> Center image
+            loss = l1_loss(self.LR_C_loss(camera, x_coords, y_coords, -self.opt.lr_baseline, fx, W), center_img)
+            # Right -> Center image (need to over-correct the translation as the camera params change w.r.t sequence)
+            loss += l1_loss(self.LR_C_loss(camera, x_coords, y_coords, (2.*self.opt.lr_baseline), fx, W), center_img)
+
+            return loss/2.
 
 
     def train_step(self):
@@ -933,8 +1011,10 @@ class GUI:
 
         depth_loss = 0.
         L1 = 0.
+        consistency_loss = 0.
 
         for viewpoint_cam in viewpoint_cams:
+
             try: # If we have seperate depth
                 viewpoint_cam, pcd_path = viewpoint_cam
             except:
@@ -947,13 +1027,28 @@ class GUI:
                 # self.track_cpu_gpu_usage(viewpoint_cam.time)
                 pass
 
+            # Handle disparity loss
             render_pkg = render(viewpoint_cam, self.gaussians, self.pipe, self.background, stage=self.stage, cam_type=self.scene.dataset_type)
             image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+
 
             if self.scene.dataset_type!="PanopticSports":
                 gt_image = viewpoint_cam.original_image.cuda()
             else:
                 gt_image  = viewpoint_cam['image'].cuda()
+
+            if self.stage == "fine": factor = 1.
+            else: factor=10.
+
+            if self.opt.comprehensive_loss:
+                if self.opt.late_start:
+                    if self.iteration > 7000: # start late loss after 7000 its
+                        consistency_loss += factor * self.consistency_loss(viewpoint_cam, image, gt_img=gt_image)
+                else:
+                    consistency_loss += factor * self.consistency_loss(viewpoint_cam, image, gt_img=gt_image)
+            else:
+                consistency_loss += factor * self.consistency_loss(viewpoint_cam, image)
+
 
             # train the gaussians inside the mask
             L1 += l1_loss(image, gt_image, viewpoint_cam.mask)
@@ -970,7 +1065,7 @@ class GUI:
         visibility_filter = torch.cat(visibility_filter_list).any(dim=0)
 
         # Loss
-        loss = L1 + (depth_loss /len(radii_list))
+        loss = L1 + (consistency_loss /len(radii_list))
 
 
         if self.iteration % 1000 == 0:
@@ -983,7 +1078,7 @@ class GUI:
             loss += self.opt.lambda_dssim * (1.0- ssim(torch.cat(images, 0),torch.cat(gt_images, 0)))
 
         # Include depth loss:
-        loss = loss # + (depth_loss / len(viewpoint_cams))
+        loss = loss
         # Backpass
         loss.backward()
 
@@ -1005,6 +1100,7 @@ class GUI:
             if self.gui:
                 dpg.set_value("_log_iter", f"{self.iteration} / {self.final_iter} its")
                 dpg.set_value("_log_loss", f"Loss: {loss.item()} ")
+                dpg.set_value("_log_depth", "Concsitency Loss : {:>12.7f}".format((consistency_loss /len(radii_list)), ".5"))
 
             if (self.iteration % 2) == 0 and self.gui:
                 total_point = self.gaussians._xyz.shape[0]
@@ -1013,7 +1109,7 @@ class GUI:
             torch.cuda.synchronize()
 
             # Save scene when at the saving iteration
-            if (self.iteration in self.saving_iterations):
+            if (self.iteration in self.saving_iterations) and self.iteration != self.checkpoint:
                 print("\n[ITER {}] Saving Gaussians".format(self.iteration))
                 self.scene.save(self.iteration, self.stage)
 
@@ -1041,8 +1137,10 @@ class GUI:
                     self.gaussians.prune(densify_threshold, opacity_threshold, self.scene.cameras_extent, size_threshold)
                     
                 # if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0 :
-                if self.iteration % self.opt.densification_interval == 0 and self.gaussians.get_xyz.shape[0]<360000 and self.opt.add_point:
-                    self.gaussians.grow(5,5, self.scene.model_path, self.iteration, self.stage)
+
+                # I've comented this out because it doesn't seem to do anything
+                # if self.iteration % self.opt.densification_interval == 0 and self.gaussians.get_xyz.shape[0]<360000 and self.opt.add_point:
+                #     self.gaussians.grow(5,5, self.scene.model_path, self.iteration, self.stage)
                     # torch.cuda.empty_cache()
                 
                 if self.iteration % self.opt.opacity_reset_interval == 0:
@@ -1053,7 +1151,7 @@ class GUI:
             if self.iteration < self.opt.iterations:
                 self.gaussians.optimizer.step()
             
-            if (self.iteration in self.checkpoint_iterations):
+            if (self.iteration in self.saving_iterations) and self.iteration != self.checkpoint:
                 print("\n[ITER {}] Saving Checkpoint".format(self.iteration))
                 torch.save((self.gaussians.capture(), self.iteration), self.scene.model_path + "/chkpnt" + f"_{self.stage}_" + str(self.iteration) + ".pth")
 

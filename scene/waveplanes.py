@@ -75,42 +75,6 @@ def init_grid_param(
     return grid_coefs
 
 
-def interpolate_ms_features(pts: torch.Tensor,
-                            ms_grids: Collection[Iterable[nn.Module]],
-                            grid_dimensions: int,
-                            concat_features: bool,
-                            num_levels: Optional[int],
-                            ) -> torch.Tensor:
-    coo_combs = list(itertools.combinations(
-        range(pts.shape[-1]), grid_dimensions)
-    )
-    if num_levels is None:
-        num_levels = len(ms_grids)
-    multi_scale_interp = [] if concat_features else 0.
-    grid: nn.ParameterList
-    for scale_id, grid in enumerate(ms_grids[:num_levels]):
-        interp_space = 1.
-        for ci, coo_comb in enumerate(coo_combs):
-            # interpolate in plane
-            feature_dim = grid[ci].shape[1]  # shape of grid[ci]: 1, out_dim, *reso
-            interp_out_plane = (
-                grid_sample_wrapper(grid[ci], pts[..., coo_comb])
-                .view(-1, feature_dim)
-            )
-            # compute product over planes
-            interp_space = interp_space * interp_out_plane
-
-        # combine over scales
-        if concat_features:
-            multi_scale_interp.append(interp_space)
-        else:
-            multi_scale_interp = multi_scale_interp + interp_space
-
-    if concat_features:
-        multi_scale_interp = torch.cat(multi_scale_interp, dim=-1)
-    return multi_scale_interp
-
-
 def interpolate_features_MUL(pts: torch.Tensor, kplanes, idwt, ro_grid, LR_flag):
     """Generate features for each point
     """
@@ -146,61 +110,6 @@ def interpolate_features_MUL(pts: torch.Tensor, kplanes, idwt, ro_grid, LR_flag)
     # Concatenate ms_features
     ms_interp = torch.cat(interp, dim=-1)
 
-    return ms_interp
-
-
-def interpolate_features_ZAM(pts: torch.Tensor, kplanes, idwt):
-    """Generate features for each point
-    """
-    interp_sum = []
-    interp = []
-    # q,r are the coordinate combinations needed to retrieve pts
-    q, r = 0, 1
-    for i in range(6):
-        if i in [2, 4, 5]:
-            coeff = kplanes[i]
-
-            ms_features = coeff(pts[..., (q, r)], idwt)  # list returned in order of fine to coarse features
-
-            # Initialise interpolated space
-            if interp == []:
-                interp = [1. for j in range(len(ms_features))]
-                interp_sum = [0. for j in range(len(ms_features))]
-
-            for j, feature in enumerate(ms_features):
-                # Sum features
-                interp[j] = interp[j] * feature
-                interp_sum[j] = interp_sum[j] + feature
-
-                # On final it of spacetime plane
-                if i == 5:
-                    # Invert agreement mask so 0. indicates agreed 0-value and 1. indicates not agreed
-                    interp_sum[j] = interp_sum[j] / 3.
-        r += 1
-        if r == 4:
-            q += 1
-            r = q + 1
-
-    # Now deal with space-only features
-    q, r = 0, 1
-    for i in range(6):
-        if i in [0, 1, 3]:
-            coeff = kplanes[i]
-
-            ms_features = coeff(pts[..., (q, r)], idwt)  # list returned in order of fine to coarse features
-
-            for j, feature in enumerate(ms_features):
-                interp[j] = interp[j] * feature
-
-                if i == 3:
-                    interp[j] = interp[j] * interp_sum[j]
-        r += 1
-        if r == 4:
-            q += 1
-            r = q + 1
-
-    # Concatenate ms_features
-    ms_interp = torch.cat(interp, dim=-1)
     return ms_interp
 
 
@@ -413,7 +322,7 @@ class GridSet(nn.Module):
         signal = []
         for plane in ms_plane:
             if self.cachesig:
-                signal.append(plane.clone())
+                signal.append(plane)
 
             if self.what == 'spacetime':
                 # Sample features
@@ -466,8 +375,6 @@ class HexPlaneField(nn.Module):
                 what = 'spacetime'
                 res = [self.grid_config[0]['resolution'][j] * res_multiplier, self.grid_config[0]['resolution'][k]]
 
-                if self.is_static:
-                    res = [1, 1]
             else:
                 what = 'space'
                 res = [self.grid_config[0]['resolution'][j] * res_multiplier,
@@ -488,6 +395,11 @@ class HexPlaneField(nn.Module):
             )
 
             self.grids.append(gridset)
+
+            k += 1
+            if k == 4:
+                j += 1
+                k = j + 1
 
         self.feat_dim = self.grid_config[0]["output_coordinate_dim"] * 2
 
