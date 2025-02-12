@@ -40,11 +40,13 @@ def grid_sample_wrapper(grid: torch.Tensor, coords: torch.Tensor, align_corners:
     coords = coords.view([coords.shape[0]] + [1] * (grid_dim - 1) + list(coords.shape[1:]))
     B, feature_dim = grid.shape[:2]
     n = coords.shape[-2]
+    
+    # Grid is range -1 to 1 and is dependant on the resolution
     interp = grid_sampler(
         grid,  # [B, feature_dim, reso, ...]
         coords,  # [B, 1, ..., n, grid_dim]
         align_corners=align_corners,
-        mode='nearest', padding_mode='border')
+        mode='bilinear', padding_mode='border')
     interp = interp.view(B, feature_dim, n).transpose(-1, -2)  # [B, n, feature_dim]
     interp = interp.squeeze()  # [B?, n, feature_dim?]
     return interp
@@ -75,127 +77,53 @@ def init_grid_param(
     return grid_coefs
 
 
-def interpolate_ms_features(pts: torch.Tensor,
-                            ms_grids: Collection[Iterable[nn.Module]],
-                            grid_dimensions: int,
-                            concat_features: bool,
-                            num_levels: Optional[int],
-                            ) -> torch.Tensor:
-    coo_combs = list(itertools.combinations(
-        range(pts.shape[-1]), grid_dimensions)
-    )
-    if num_levels is None:
-        num_levels = len(ms_grids)
-    multi_scale_interp = [] if concat_features else 0.
-    grid: nn.ParameterList
-    for scale_id, grid in enumerate(ms_grids[:num_levels]):
-        interp_space = 1.
-        for ci, coo_comb in enumerate(coo_combs):
-            # interpolate in plane
-            feature_dim = grid[ci].shape[1]  # shape of grid[ci]: 1, out_dim, *reso
-            interp_out_plane = (
-                grid_sample_wrapper(grid[ci], pts[..., coo_comb])
-                .view(-1, feature_dim)
-            )
-            # compute product over planes
-            interp_space = interp_space * interp_out_plane
-
-        # combine over scales
-        if concat_features:
-            multi_scale_interp.append(interp_space)
-        else:
-            multi_scale_interp = multi_scale_interp + interp_space
-
-    if concat_features:
-        multi_scale_interp = torch.cat(multi_scale_interp, dim=-1)
-    return multi_scale_interp
-
-
-def interpolate_features_MUL(pts: torch.Tensor, kplanes, idwt, ro_grid, LR_flag):
+def interpolate_features_MUL(pts: torch.Tensor, kplanes, idwt, ro_grid, LR_flag, res):
     """Generate features for each point
     """
     if ro_grid is not None:
         rot_pts = torch.matmul(pts[..., :3], ro_grid) # spatial rotation
         pts = torch.cat([rot_pts, pts[..., -1].unsqueeze(-1)], dim=-1) # keep time values
 
-    # initialise the feature space
-    interp = 1.
-
+    # time m feature
+    interp_1 = 1.
+    interp_4 = 1.
+    
     # q,r are the coordinate combinations needed to retrieve pts
     q, r = 0, 1
     for i in range(6):
 
         coeff = kplanes[i]
 
-        if LR_flag:
-            feature = coeff.LR(pts[..., (q, r)], idwt)
+        # if LR_flag:
+        #     feature = coeff.LR(pts[..., (q, r)], idwt)
+        # else:
+        #     feature = coeff(pts[..., (q, r)], idwt)
+
+        # Get next space-time features
+        if r == 3 and LR_flag==False:
+            # Normalize time points between -1 and 1 - need to check if time planes learn anything tbh 
+            pts[:,-1] = (pts[:, -1]*2.)-1.
+            
+            interp_1 = interp_1 * coeff(pts[..., (q, r)], idwt) 
+            
+            grid_shift = torch.zeros_like(pts[..., (q, r)])
+            # Grid position will be current poistion + 1/resolution
+            grid_shift[:, -1] = grid_shift[:, -1] + (1./ res)
+            interp_4 = interp_4 * coeff(pts[..., (q, r)]+grid_shift, idwt)
+        
         else:
-            feature = coeff(pts[..., (q, r)], idwt)  # list returned in order of fine to coarse features
+            feature = coeff(pts[..., (q, r)], idwt)
+            
+            interp_4 = interp_4 * feature
+            interp_1 = interp_1 * feature
 
-        interp = interp * feature
-
+        
         r += 1
         if r == 4:
             q += 1
             r = q + 1
 
-    return interp
-
-
-def interpolate_features_ZAM(pts: torch.Tensor, kplanes, idwt):
-    """Generate features for each point
-    """
-    interp_sum = []
-    interp = []
-    # q,r are the coordinate combinations needed to retrieve pts
-    q, r = 0, 1
-    for i in range(6):
-        if i in [2, 4, 5]:
-            coeff = kplanes[i]
-
-            ms_features = coeff(pts[..., (q, r)], idwt)  # list returned in order of fine to coarse features
-
-            # Initialise interpolated space
-            if interp == []:
-                interp = [1. for j in range(len(ms_features))]
-                interp_sum = [0. for j in range(len(ms_features))]
-
-            for j, feature in enumerate(ms_features):
-                # Sum features
-                interp[j] = interp[j] * feature
-                interp_sum[j] = interp_sum[j] + feature
-
-                # On final it of spacetime plane
-                if i == 5:
-                    # Invert agreement mask so 0. indicates agreed 0-value and 1. indicates not agreed
-                    interp_sum[j] = interp_sum[j] / 3.
-        r += 1
-        if r == 4:
-            q += 1
-            r = q + 1
-
-    # Now deal with space-only features
-    q, r = 0, 1
-    for i in range(6):
-        if i in [0, 1, 3]:
-            coeff = kplanes[i]
-
-            ms_features = coeff(pts[..., (q, r)], idwt)  # list returned in order of fine to coarse features
-
-            for j, feature in enumerate(ms_features):
-                interp[j] = interp[j] * feature
-
-                if i == 3:
-                    interp[j] = interp[j] * interp_sum[j]
-        r += 1
-        if r == 4:
-            q += 1
-            r = q + 1
-
-    # Concatenate ms_features
-    ms_interp = torch.cat(interp, dim=-1)
-    return ms_interp
-
+    return interp_1, interp_4
 
 # Define the grid
 class GridSet(nn.Module):
@@ -403,11 +331,11 @@ class GridSet(nn.Module):
         signal = []
         if self.cachesig:
             signal.append(plane)
-
-        if self.what == 'spacetime':
+        
+        if self.what == 'spacetime': 
             # Sample features
             feature = (
-                grid_sample_wrapper(plane, pts, st=True)
+                grid_sample_wrapper(plane, pts)
                 .view(-1, plane.shape[1])
             )
         else:
@@ -419,6 +347,7 @@ class GridSet(nn.Module):
 
         self.signal = signal
         self.step += 1
+
         
         # Return multiscale features
         return feature
@@ -431,7 +360,7 @@ class HexPlaneField(nn.Module):
             planeconfig,
             multires,
             use_rotation=False
-    ) -> None:
+    ):
         super().__init__()
         aabb = torch.tensor([[bounds, bounds, bounds],
                              [-bounds, -bounds, -bounds]])
@@ -448,15 +377,12 @@ class HexPlaneField(nn.Module):
         self.cacheplanes = True
         self.is_waveplanes = True
 
-        res_multiplier = 1
+        res_multiplier = 3
         j, k = 0, 1
         for i in range(6):
             if k == 3:
                 what = 'spacetime'
                 res = [self.grid_config[0]['resolution'][j] * res_multiplier, self.grid_config[0]['resolution'][k]]
-
-                if self.is_static:
-                    res = [1, 1]
             else:
                 what = 'space'
                 res = [self.grid_config[0]['resolution'][j] * res_multiplier,
@@ -477,6 +403,11 @@ class HexPlaneField(nn.Module):
             )
 
             self.grids.append(gridset)
+            
+            k += 1
+            if k == 4:
+                j += 1
+                k = j + 1
 
         self.feat_dim = self.grid_config[0]["output_coordinate_dim"]
 
@@ -563,19 +494,17 @@ class HexPlaneField(nn.Module):
 
         pts = pts.reshape(-1, pts.shape[-1])
 
-        features = interpolate_features_MUL(
-            pts, self.grids, self.idwt, self.reorient_grid, LR_flag=LR_flag
+        features, features4 = interpolate_features_MUL(
+            pts, self.grids, self.idwt, self.reorient_grid, LR_flag, self.grid_config[0]['resolution'][3]
         )
 
         if len(features) < 1:
             features = torch.zeros((0, 1)).to(features.device)
 
-        return features
+        return features, features4
 
     def forward(self,
                 pts: torch.Tensor,
                 timestamps: Optional[torch.Tensor] = None, LR_flag: bool = False):
 
-        features = self.get_density(pts, timestamps, LR_flag=LR_flag)
-
-        return features
+        return self.get_density(pts, timestamps, LR_flag=LR_flag)

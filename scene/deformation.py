@@ -73,8 +73,13 @@ class Deformation(nn.Module):
             
         self.feature_out = nn.Sequential(*self.feature_out)
         self.pos_deform = nn.Sequential(nn.ReLU(),nn.Linear(self.W,self.W),nn.ReLU(),nn.Linear(self.W, 3))
+        self.bezier_1 = nn.Sequential(nn.ReLU(),nn.Linear(self.W,self.W),nn.ReLU(),nn.Linear(self.W, 3))
+        self.bezier_2 = nn.Sequential(nn.ReLU(),nn.Linear(self.W,self.W),nn.ReLU(),nn.Linear(self.W, 3))
+
+        
         self.scales_deform = nn.Sequential(nn.ReLU(),nn.Linear(self.W,self.W),nn.ReLU(),nn.Linear(self.W, 3))
         self.rotations_deform = nn.Sequential(nn.ReLU(),nn.Linear(self.W,self.W),nn.ReLU(),nn.Linear(self.W, 4))
+
         self.opacity_deform = nn.Sequential(nn.ReLU(),nn.Linear(self.W,self.W),nn.ReLU(),nn.Linear(self.W, 1))
         self.shs_deform = nn.Sequential(nn.ReLU(),nn.Linear(self.W,self.W),nn.ReLU(),nn.Linear(self.W, 16*3))
 
@@ -82,18 +87,23 @@ class Deformation(nn.Module):
 
         if self.no_grid:
             hidden = torch.cat([rays_pts_emb[:,:3],time_emb[:,:1]],-1)
-        else:
+            hidden = self.feature_out(hidden)   
 
-            hidden = self.grid(rays_pts_emb[:,:3], time_emb[:,:1])
+            return hidden
+
+        else:
+            hidden1, hidden2 = self.grid(rays_pts_emb[:,:3], time_emb[:,:1])
             # breakpoint()
             if self.grid_pe > 1:
-                hidden = poc_fre(hidden,self.grid_pe)
+                hidden1 = poc_fre(hidden1,self.grid_pe)
+                hidden2 = poc_fre(hidden2,self.grid_pe)
              
         
-        hidden = self.feature_out(hidden)   
- 
+            hidden1 = self.feature_out(hidden1)   
+            hidden2 = self.feature_out(hidden2)   
+    
 
-        return hidden
+            return hidden1,hidden2
     @property
     def get_empty_ratio(self):
         return self.ratio
@@ -107,28 +117,46 @@ class Deformation(nn.Module):
         grid_feature = self.grid(rays_pts_emb[:,:3])
         dx = self.static_mlp(grid_feature)
         return rays_pts_emb[:, :3] + dx
-    def forward_dynamic(self,rays_pts_emb, scales_emb, rotations_emb, opacity_emb, shs_emb, time_feature, time_emb):
-        hidden = self.query_time(rays_pts_emb, scales_emb, rotations_emb, time_feature, time_emb)
+    def forward_dynamic(self,rays_pts_emb, scales_emb, rotations_emb, opacity_emb, shs_emb, time_feature, time_emb,):
+        
+        hidden, hidden2 = self.query_time(rays_pts_emb, scales_emb, rotations_emb, time_feature, time_emb)
         if self.args.static_mlp:
             mask = self.static_mlp(hidden)
         elif self.args.empty_voxel:
             mask = self.empty_voxel(rays_pts_emb[:,:3])
         else:
             mask = torch.ones_like(opacity_emb[:,0]).unsqueeze(-1)
-        # breakpoint()
+        
+        
+        
         if self.args.no_dx:
             pts = rays_pts_emb[:,:3]
         else:
-            dx = self.pos_deform(hidden)
-            pts = torch.zeros_like(rays_pts_emb[:,:3])
-            pts = rays_pts_emb[:,:3]*mask + dx
+
+            dx_start = self.pos_deform(hidden)
+            # dx_1 = self.bezier_1(hidden)
+            # dx_2 = self.bezier_1(hidden)
+
+            # # In local space we can avoid the first term of Bezier func (1-t)**2 * dx by projecting the curve into the first points
+            # # local space, i.e. where dx_start sits at the origin. This is replaced wit two minus functions
+            # # that simply translate the point to and from the local space
+            # dx_end = self.pos_deform(hidden2) - dx_start
+
+            # # Bezier interpolation
+            # t = time_emb % (1. / self.grid.grid_config[0]['resolution'][3])
+            # dx = 3*((1-t)**2)*t*dx_1 + 3*(1-t)*(t**2)*dx_2  + t**2 * dx_end
+            
+            # # Project the local position back to world space
+            # dx = dx + dx_start
+            
+            pts = rays_pts_emb[:,:3]*mask + dx_start
+
+
         if self.args.no_ds :
             
             scales = scales_emb[:,:3]
         else:
             ds = self.scales_deform(hidden)
-
-            scales = torch.zeros_like(scales_emb[:,:3])
             scales = scales_emb[:,:3]*mask + ds
             
         if self.args.no_dr :
@@ -136,7 +164,6 @@ class Deformation(nn.Module):
         else:
             dr = self.rotations_deform(hidden)
 
-            rotations = torch.zeros_like(rotations_emb[:,:4])
             if self.args.apply_rotation:
                 rotations = batch_quaternion_multiply(rotations_emb, dr)
             else:
@@ -147,7 +174,6 @@ class Deformation(nn.Module):
         else:
             do = self.opacity_deform(hidden) 
           
-            opacity = torch.zeros_like(opacity_emb[:,:1])
             opacity = opacity_emb[:,:1]*mask + do
         if self.args.no_dshs:
             shs = shs_emb
