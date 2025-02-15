@@ -3,7 +3,7 @@ import json
 import matplotlib.pyplot as plt
 
 root = '/home/barry/Desktop/mywork/GS_Research/output/dynerf/'
-folder = 'sear_steak/'
+folder = 'cut_roasted_beef/'
 
 focal_word = ''
 non_words = []
@@ -42,12 +42,15 @@ for run in runs:
             d_psnr.append(0.)
             d_ssim.append(0.)
 
+    
 
     paired_list = list(zip(to_sort, d_psnr, d_ssim))
     paired_list.sort(key=lambda x: x[0])
     y_psnr.append([x[1] for x in paired_list])
     y_ssim.append([x[2] for x in paired_list])
-
+    
+    print(([x[1] for x in paired_list]))
+    print(([x[2] for x in paired_list]))
 
 
 
@@ -74,7 +77,8 @@ for result, name in zip(y_ssim, names):
         if n in name:
             check += 1
     if (focal_word in name or 'bench' in name) and check == 0:
-        axes[1].plot(result, label=f"{name}")  # Add a label for each set
+        if 'bench' in name:         axes[1].plot(result, label=f"{name}", color='black')  # Add a label for each set
+        else: axes[1].plot(result, label=f"{name}")  # Add a label for each set
 axes[1].set_title("SSIM Results")
 axes[1].legend()  # Show the legend
 axes[1].grid(True)  # Add a grid

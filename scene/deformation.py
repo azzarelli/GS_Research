@@ -71,10 +71,15 @@ class Deformation(nn.Module):
             self.feature_out.append(nn.ReLU())
             self.feature_out.append(nn.Linear(self.W,self.W))
             
+
         self.feature_out = nn.Sequential(*self.feature_out)
+        
+        self.bezier_1 = nn.Sequential(nn.ReLU(),nn.Linear(grid_out_dim,self.W),nn.ReLU(), nn.Linear(self.W,grid_out_dim))
+        self.bezier_2 = nn.Sequential(nn.ReLU(),nn.Linear(grid_out_dim,self.W),nn.ReLU(), nn.Linear(self.W,grid_out_dim))
+        
         self.pos_deform = nn.Sequential(nn.ReLU(),nn.Linear(self.W,self.W),nn.ReLU(),nn.Linear(self.W, 3))
-        self.bezier_1 = nn.Sequential(nn.ReLU(),nn.Linear(self.W,self.W),nn.ReLU(),nn.Linear(self.W, 3))
-        self.bezier_2 = nn.Sequential(nn.ReLU(),nn.Linear(self.W,self.W),nn.ReLU(),nn.Linear(self.W, 3))
+        # self.bezier_1 = nn.Sequential(nn.ReLU(),nn.Linear(self.W,self.W),nn.ReLU(),nn.Linear(self.W, 3))
+        # self.bezier_2 = nn.Sequential(nn.ReLU(),nn.Linear(self.W,self.W),nn.ReLU(),nn.Linear(self.W, 3))
 
         
         self.scales_deform = nn.Sequential(nn.ReLU(),nn.Linear(self.W,self.W),nn.ReLU(),nn.Linear(self.W, 3))
@@ -98,12 +103,18 @@ class Deformation(nn.Module):
                 hidden1 = poc_fre(hidden1,self.grid_pe)
                 hidden2 = poc_fre(hidden2,self.grid_pe)
              
-        
-            hidden1 = self.feature_out(hidden1)   
-            hidden2 = self.feature_out(hidden2)   
-    
+            dx1 = self.bezier_1(hidden1)
+            dx2 = self.bezier_2(hidden1)
+            
+            dx3 = hidden2 - hidden1
 
-            return hidden1,hidden2
+            # Bezier interpolation
+            t = time_emb % (1. / self.grid.grid_config[0]['resolution'][3])
+            dx = 3*((1-t)**2)*t*dx1 + 3*(1-t)*(t**2)*dx2  + t**2 * dx3
+            
+            # Project the local position back to world space
+            return self.feature_out(hidden1), self.feature_out(dx + hidden1)
+
     @property
     def get_empty_ratio(self):
         return self.ratio
@@ -119,7 +130,7 @@ class Deformation(nn.Module):
         return rays_pts_emb[:, :3] + dx
     def forward_dynamic(self,rays_pts_emb, scales_emb, rotations_emb, opacity_emb, shs_emb, time_feature, time_emb,):
         
-        hidden, hidden2 = self.query_time(rays_pts_emb, scales_emb, rotations_emb, time_feature, time_emb)
+        hidden2, hidden = self.query_time(rays_pts_emb, scales_emb, rotations_emb, time_feature, time_emb)
         if self.args.static_mlp:
             mask = self.static_mlp(hidden)
         elif self.args.empty_voxel:
@@ -175,6 +186,7 @@ class Deformation(nn.Module):
             do = self.opacity_deform(hidden) 
           
             opacity = opacity_emb[:,:1]*mask + do
+        
         if self.args.no_dshs:
             shs = shs_emb
         else:

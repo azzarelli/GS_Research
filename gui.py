@@ -508,13 +508,13 @@ class GUI:
         self.iter_start = torch.cuda.Event(enable_timing=True)
         self.iter_end = torch.cuda.Event(enable_timing=True)
 
+        if self.stage == 'coarse':
+            self.viewpoint_stack = self.scene.getTrainCameras()
+            self.test_viewpoint_stack = self.scene.getTestCameras()
 
-        self.viewpoint_stack = self.scene.getTrainCameras()
-        self.test_viewpoint_stack = self.scene.getTestCameras()
-
-        self.random_loader  = True
-        self.loader = iter(DataLoader(self.viewpoint_stack, batch_size=self.opt.batch_size, shuffle=True,
-                                            num_workers=16, collate_fn=list))
+            self.random_loader  = True
+            self.loader = iter(DataLoader(self.viewpoint_stack, batch_size=self.opt.batch_size, shuffle=True,
+                                                num_workers=16, collate_fn=list))
 
         self.load_in_memory = False
 
@@ -882,7 +882,7 @@ class GUI:
             except StopIteration:
                 print("reset dataloader into random dataloader.")
                 viewpoint_stack_loader = DataLoader(self.viewpoint_stack, batch_size=self.opt.batch_size, shuffle=True,
-                                                    num_workers=32, collate_fn=list)
+                                                    num_workers=16, collate_fn=list)
                 self.random_loader = True
                 self.loader = iter(viewpoint_stack_loader)
                 viewpoint_cams = next(self.loader)
@@ -982,7 +982,7 @@ class GUI:
             loss += self.opt.lambda_dssim * (1.0- ssim(torch.cat(images, 0),torch.cat(gt_images, 0)))
 
         # Include depth loss:
-        loss = loss # + (depth_loss / len(viewpoint_cams))
+        # loss = loss # + (depth_loss / len(viewpoint_cams))
         # Backpass
         loss.backward()
 
